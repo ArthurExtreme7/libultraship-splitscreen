@@ -1,4 +1,7 @@
 #include "ship/controller/physicaldevice/ConnectedPhysicalDeviceManager.h"
+#include "ship/Context.h"
+#include "ship/config/ConsoleVariable.h"
+#include "ship/utils/StringHelper.h"
 #include <spdlog/spdlog.h>
 
 namespace Ship {
@@ -35,10 +38,88 @@ bool ConnectedPhysicalDeviceManager::PortIsIgnoringInstanceId(uint8_t portIndex,
 
 void ConnectedPhysicalDeviceManager::IgnoreInstanceIdForPort(uint8_t portIndex, int32_t instanceId) {
     mIgnoredInstanceIds[portIndex].insert(instanceId);
+
+    if (portIndex == 0 || portIndex >= 4) {
+        return;
+    }
+
+    auto guid = mConnectedSDLGamepadGUIDs.find(instanceId);
+    if (guid == mConnectedSDLGamepadGUIDs.end()) {
+        return;
+    }
+
+    for (const auto& [otherInstanceId, otherGUID] : mConnectedSDLGamepadGUIDs) {
+        if (otherInstanceId != instanceId && otherGUID == guid->second &&
+            !PortIsIgnoringInstanceId(portIndex, otherInstanceId)) {
+            return;
+        }
+    }
+
+    auto guids = GetAssignedSDLGamepadGUIDsForPort(portIndex);
+    if (guids.erase(guid->second) != 0) {
+        SetAssignedSDLGamepadGUIDsForPort(portIndex, guids);
+    }
 }
 
 void ConnectedPhysicalDeviceManager::UnignoreInstanceIdForPort(uint8_t portIndex, int32_t instanceId) {
     mIgnoredInstanceIds[portIndex].erase(instanceId);
+
+    if (portIndex == 0 || portIndex >= 4) {
+        return;
+    }
+
+    auto guid = mConnectedSDLGamepadGUIDs.find(instanceId);
+    if (guid == mConnectedSDLGamepadGUIDs.end()) {
+        return;
+    }
+
+    auto guids = GetAssignedSDLGamepadGUIDsForPort(portIndex);
+    if (guids.insert(guid->second).second) {
+        SetAssignedSDLGamepadGUIDsForPort(portIndex, guids);
+    }
+}
+
+std::unordered_set<std::string>
+ConnectedPhysicalDeviceManager::GetAssignedSDLGamepadGUIDsForPort(uint8_t portIndex) {
+    std::unordered_set<std::string> guids;
+    auto context = Context::GetInstance();
+    auto consoleVariables = context == nullptr ? nullptr : context->GetConsoleVariables();
+    if (consoleVariables == nullptr) {
+        return guids;
+    }
+
+    const std::string cvarKey =
+        StringHelper::Sprintf(CVAR_PREFIX_CONTROLLERS ".Port%d.AssignedSDLGamepadGUIDs", portIndex + 1);
+    const std::string assignedGUIDs = consoleVariables->GetString(cvarKey.c_str(), "");
+    for (const auto& guid : StringHelper::Split(assignedGUIDs, ",")) {
+        if (!guid.empty()) {
+            guids.insert(guid);
+        }
+    }
+
+    return guids;
+}
+
+void ConnectedPhysicalDeviceManager::SetAssignedSDLGamepadGUIDsForPort(
+    uint8_t portIndex, const std::unordered_set<std::string>& guids) {
+    auto context = Context::GetInstance();
+    auto consoleVariables = context == nullptr ? nullptr : context->GetConsoleVariables();
+    if (consoleVariables == nullptr) {
+        return;
+    }
+
+    std::string joinedGUIDs;
+    for (const auto& guid : guids) {
+        if (!joinedGUIDs.empty()) {
+            joinedGUIDs += ",";
+        }
+        joinedGUIDs += guid;
+    }
+
+    const std::string cvarKey =
+        StringHelper::Sprintf(CVAR_PREFIX_CONTROLLERS ".Port%d.AssignedSDLGamepadGUIDs", portIndex + 1);
+    consoleVariables->SetString(cvarKey.c_str(), joinedGUIDs.c_str());
+    consoleVariables->Save();
 }
 
 void ConnectedPhysicalDeviceManager::HandlePhysicalDeviceConnect(int32_t sdlDeviceIndex) {
@@ -52,6 +133,14 @@ void ConnectedPhysicalDeviceManager::HandlePhysicalDeviceDisconnect(int32_t sdlJ
 void ConnectedPhysicalDeviceManager::RefreshConnectedSDLGamepads() {
     mConnectedSDLGamepads.clear();
     mConnectedSDLGamepadNames.clear();
+    mConnectedSDLGamepadGUIDs.clear();
+
+    std::unordered_set<std::string> assignedGUIDsByPort[4];
+    for (uint8_t port = 1; port < 4; port++) {
+        assignedGUIDsByPort[port] = GetAssignedSDLGamepadGUIDsForPort(port);
+        mIgnoredInstanceIds[port].clear();
+    }
+
     static SDL_JoystickGUID sZeroGuid;
 
     for (int32_t i = 0; i < SDL_NumJoysticks(); i++) {
@@ -99,9 +188,12 @@ void ConnectedPhysicalDeviceManager::RefreshConnectedSDLGamepads() {
 
         mConnectedSDLGamepads[instanceId] = gamepad;
         mConnectedSDLGamepadNames[instanceId] = gamepadName;
+        mConnectedSDLGamepadGUIDs[instanceId] = deviceGuidCStr;
 
         for (uint8_t port = 1; port < 4; port++) {
-            mIgnoredInstanceIds[port].insert(instanceId);
+            if (!assignedGUIDsByPort[port].contains(deviceGuidCStr)) {
+                mIgnoredInstanceIds[port].insert(instanceId);
+            }
         }
     }
 }

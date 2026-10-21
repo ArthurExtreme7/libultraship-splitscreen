@@ -27,6 +27,10 @@ class ConnectedPhysicalDeviceManager {
   private:
     std::unordered_map<int32_t, SDL_GameController*> mConnectedSDLGamepads;
     std::unordered_map<int32_t, std::string> mConnectedSDLGamepadNames;
+    std::unordered_map<int32_t, std::string> mConnectedSDLGamepadGUIDs;
     std::unordered_map<uint8_t, std::unordered_set<int32_t>> mIgnoredInstanceIds;
+
+    std::unordered_set<std::string> GetAssignedSDLGamepadGUIDsForPort(uint8_t portIndex);
+    void SetAssignedSDLGamepadGUIDsForPort(uint8_t portIndex, const std::unordered_set<std::string>& guids);
 };
 } // namespace Ship
