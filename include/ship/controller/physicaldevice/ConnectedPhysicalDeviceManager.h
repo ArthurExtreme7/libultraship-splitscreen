@@ -32,5 +32,6 @@ class ConnectedPhysicalDeviceManager {
 
     std::unordered_set<std::string> GetAssignedSDLGamepadGUIDsForPort(uint8_t portIndex);
     void SetAssignedSDLGamepadGUIDsForPort(uint8_t portIndex, const std::unordered_set<std::string>& guids);
+    bool PortHasExplicitSDLGamepadAssignments(uint8_t portIndex);
 };
 } // namespace Ship

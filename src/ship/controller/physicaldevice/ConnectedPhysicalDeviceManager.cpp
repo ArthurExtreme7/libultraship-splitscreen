@@ -36,12 +36,40 @@ bool ConnectedPhysicalDeviceManager::PortIsIgnoringInstanceId(uint8_t portIndex,
     return GetIgnoredInstanceIdsForPort(portIndex).contains(instanceId);
 }
 
-void ConnectedPhysicalDeviceManager::IgnoreInstanceIdForPort(uint8_t portIndex, int32_t instanceId) {
-    mIgnoredInstanceIds[portIndex].insert(instanceId);
+bool ConnectedPhysicalDeviceManager::PortHasExplicitSDLGamepadAssignments(uint8_t portIndex) {
+    auto context = Context::GetInstance();
+    auto consoleVariables = context == nullptr ? nullptr : context->GetConsoleVariables();
+    if (consoleVariables == nullptr) {
+        return false;
+    }
 
-    if (portIndex == 0 || portIndex >= 4) {
+    const std::string cvarKey =
+        StringHelper::Sprintf(CVAR_PREFIX_CONTROLLERS ".Port%d.HasAssignedSDLGamepadGUIDs", portIndex + 1);
+
+    return consoleVariables->GetInteger(cvarKey.c_str(), 0) != 0;
+}
+
+void ConnectedPhysicalDeviceManager::IgnoreInstanceIdForPort(uint8_t portIndex, int32_t instanceId) {
+    if (portIndex >= 4) {
         return;
     }
+
+    // Player 1 previously allowed every connected gamepad implicitly. On the first explicit
+    // change, convert that implicit set into a saved assignment so deselecting a controller
+    // actually sticks across restarts.
+    if ((portIndex == 0) && !PortHasExplicitSDLGamepadAssignments(portIndex)) {
+        std::unordered_set<std::string> guids;
+
+        for (const auto& [connectedInstanceId, connectedGUID] : mConnectedSDLGamepadGUIDs) {
+            if (!PortIsIgnoringInstanceId(portIndex, connectedInstanceId)) {
+                guids.insert(connectedGUID);
+            }
+        }
+
+        SetAssignedSDLGamepadGUIDsForPort(portIndex, guids);
+    }
+
+    mIgnoredInstanceIds[portIndex].insert(instanceId);
 
     auto guid = mConnectedSDLGamepadGUIDs.find(instanceId);
     if (guid == mConnectedSDLGamepadGUIDs.end()) {
@@ -62,11 +90,23 @@ void ConnectedPhysicalDeviceManager::IgnoreInstanceIdForPort(uint8_t portIndex, 
 }
 
 void ConnectedPhysicalDeviceManager::UnignoreInstanceIdForPort(uint8_t portIndex, int32_t instanceId) {
-    mIgnoredInstanceIds[portIndex].erase(instanceId);
-
-    if (portIndex == 0 || portIndex >= 4) {
+    if (portIndex >= 4) {
         return;
     }
+
+    if ((portIndex == 0) && !PortHasExplicitSDLGamepadAssignments(portIndex)) {
+        std::unordered_set<std::string> guids;
+
+        for (const auto& [connectedInstanceId, connectedGUID] : mConnectedSDLGamepadGUIDs) {
+            if (!PortIsIgnoringInstanceId(portIndex, connectedInstanceId)) {
+                guids.insert(connectedGUID);
+            }
+        }
+
+        SetAssignedSDLGamepadGUIDsForPort(portIndex, guids);
+    }
+
+    mIgnoredInstanceIds[portIndex].erase(instanceId);
 
     auto guid = mConnectedSDLGamepadGUIDs.find(instanceId);
     if (guid == mConnectedSDLGamepadGUIDs.end()) {
@@ -118,7 +158,10 @@ void ConnectedPhysicalDeviceManager::SetAssignedSDLGamepadGUIDsForPort(
 
     const std::string cvarKey =
         StringHelper::Sprintf(CVAR_PREFIX_CONTROLLERS ".Port%d.AssignedSDLGamepadGUIDs", portIndex + 1);
+    const std::string markerKey =
+        StringHelper::Sprintf(CVAR_PREFIX_CONTROLLERS ".Port%d.HasAssignedSDLGamepadGUIDs", portIndex + 1);
     consoleVariables->SetString(cvarKey.c_str(), joinedGUIDs.c_str());
+    consoleVariables->SetInteger(markerKey.c_str(), 1);
     consoleVariables->Save();
 }
 
@@ -136,8 +179,10 @@ void ConnectedPhysicalDeviceManager::RefreshConnectedSDLGamepads() {
     mConnectedSDLGamepadGUIDs.clear();
 
     std::unordered_set<std::string> assignedGUIDsByPort[4];
-    for (uint8_t port = 1; port < 4; port++) {
+    bool portHasExplicitAssignments[4];
+    for (uint8_t port = 0; port < 4; port++) {
         assignedGUIDsByPort[port] = GetAssignedSDLGamepadGUIDsForPort(port);
+        portHasExplicitAssignments[port] = PortHasExplicitSDLGamepadAssignments(port);
         mIgnoredInstanceIds[port].clear();
     }
 
@@ -190,8 +235,24 @@ void ConnectedPhysicalDeviceManager::RefreshConnectedSDLGamepads() {
         mConnectedSDLGamepadNames[instanceId] = gamepadName;
         mConnectedSDLGamepadGUIDs[instanceId] = deviceGuidCStr;
 
-        for (uint8_t port = 1; port < 4; port++) {
-            if (!assignedGUIDsByPort[port].contains(deviceGuidCStr)) {
+        for (uint8_t port = 0; port < 4; port++) {
+            bool assignedToPort = assignedGUIDsByPort[port].contains(deviceGuidCStr);
+
+            // Until player 1 has an explicit saved assignment, let P1 use every gamepad that
+            // isn't assigned to another player. This keeps the old default behavior while
+            // preventing P1 from also controlling a gamepad selected for P2-P4.
+            if ((port == 0) && !portHasExplicitAssignments[port]) {
+                assignedToPort = true;
+
+                for (uint8_t otherPort = 1; otherPort < 4; otherPort++) {
+                    if (assignedGUIDsByPort[otherPort].contains(deviceGuidCStr)) {
+                        assignedToPort = false;
+                        break;
+                    }
+                }
+            }
+
+            if (!assignedToPort) {
                 mIgnoredInstanceIds[port].insert(instanceId);
             }
         }
